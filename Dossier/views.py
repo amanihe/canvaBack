@@ -1,7 +1,8 @@
 from ctypes.wintypes import SERVICE_STATUS_HANDLE
 from http.client import HTTPResponse
+import json
 from multiprocessing import connection
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseNotAllowed
 from django.shortcuts import render
 from Dossier.models import *
 from Dossier.serializers import *
@@ -59,7 +60,27 @@ def add_folder(request):
 
     # Si la méthode n'est pas POST
     return JsonResponse({'error': 'Méthode non autorisée'}) 
-
+"""@csrf_exempt
+def Crud_Link(request, id=0):
+    if request.method == 'GET':
+        link = T_Link.objects.all()
+        link_serializer = S_Link(link, many=True)
+        return JsonResponse(link_serializer.data, safe=False)
+    elif request.method == 'POST':
+        link_data = JSONParser().parse(request)
+        dossier_id = link_data.pop('Dossier_Id')
+       # field_id = link_data.pop('Field_Id')
+        print('dossier_id:', dossier_id)
+      #  print('field_id:', field_id)
+        print('link_data:', link_data)
+        dossier = T_Dossier.objects.get(Dossier_Id=dossier_id)
+      #  field = T_Field.objects.get(Field_Id=field_id)
+        link = T_Link.objects.create(**link_data)
+        link.Dossier_Id.add(dossier)
+       # link.Field_Id.add(field)
+        link_serializer = S_Link(link)
+        return JsonResponse(link_serializer.data, safe=False)
+"""
 @csrf_exempt
 def Crud_Link(request, id=0):
     if request.method == 'GET':
@@ -68,13 +89,18 @@ def Crud_Link(request, id=0):
         return JsonResponse(link_serializer.data, safe=False)
     elif request.method == 'POST':
         link_data = JSONParser().parse(request)
-        link_serializer = S_Link(data=link_data)
-        if link_serializer.is_valid():
-            link_serializer.save()
+        dossier_id = link_data.pop('Dossier_Id')
+        field_id = link_data.pop('Field_Id')
+    
+        dossier = T_Dossier.objects.get(Dossier_Id=dossier_id)
+        field = T_Field.objects.get(Field_Id=field_id)
+   
+        link = T_Link.objects.create( Field_Id=field, **link_data)
+        link.Dossier_Id.set([dossier])
+        link_serializer = S_Link(link)
+        return JsonResponse("Added Successfully", safe=False)
 
-            return JsonResponse("Added Successfully", safe=False)
 
-        return JsonResponse("Failed to Add", safe=False)
     elif request.method == 'PUT':
         link_data = JSONParser().parse(request)
         link = T_Link.objects.get(Link_Id=link_data['Link_Id'])
@@ -99,6 +125,18 @@ def getLink_ByField(request, id):
         return JsonResponse(serializer.data, safe=False)
     except:
         return JsonResponse({"error": "Une erreur s'est produite"}, status=500)
+@csrf_exempt
+def getLink_ByFieldDossier(request, idField,idDossier):
+    try:
+        # Récupération des dossiers ayant le parent_id donné
+        links = T_Link.objects.filter(Field_Id=idField,Dossier_Id=idDossier)
+        # Sérialisation des données des dossiers
+        serializer = S_Link(links, many=True)
+        # Renvoi des données sérialisées en JSON
+        return JsonResponse(serializer.data, safe=False)
+    except:
+        return JsonResponse({"error": "Une erreur s'est produite"}, status=500)
+
 
 
 @csrf_exempt
@@ -247,6 +285,20 @@ def add_dossier_to_Field(request):
         except T_Dossier.DoesNotExist:
             return JsonResponse({"status": f'T_Dossier object with Dossier_Id={data["Dossier_Id"]} does not exist'}, status=400)
     return JsonResponse({"status": "failed"})
+@csrf_exempt
+def add_dossier_to_Link(request):
+    if request.method == 'POST':
+        data = JSONParser().parse(request)
+        try:
+            link = T_Link.objects.get(Link_Id=data["Link_Id"])
+            dossier = T_Dossier.objects.get(Dossier_Id=data["Dossier_Id"])
+            link.Dossier_Id.add(dossier)
+            return JsonResponse({"status": "success"})
+        except T_Field.DoesNotExist:
+            return JsonResponse({"status": f'T_Link object with Field_Id={data["Link_Id"]} does not exist'}, status=400)
+        except T_Dossier.DoesNotExist:
+            return JsonResponse({"status": f'T_Dossier object with Dossier_Id={data["Dossier_Id"]} does not exist'}, status=400)
+    return JsonResponse({"status": "failed"})
 
 
 @csrf_exempt
@@ -272,7 +324,46 @@ def Field_By_RectDossier(request, idRect, idDossier):
     except:
         return HTTPResponse(status=404)
 
+@csrf_exempt
+def Field_By_DossierParent(request, idRect, idDossier):
+    try:
+        dossier = T_Dossier.objects.filter(Dossier_Id=idDossier) | T_Dossier.objects.filter(Dossier_Parent=idDossier)
+        fields = T_Field.objects.filter(Rect_Id=idRect, Dossier_Id__in=dossier).distinct()
+        serializer = S_Field(fields, many=True)
+        return JsonResponse(serializer.data, safe=False)
+    except T_Field.DoesNotExist:
+        return HttpResponse(status=404)
 
+
+
+@csrf_exempt
+def delete_dossier_from_link(request, link_id, dossier_id):
+    try:
+        link = T_Link.objects.get(Link_Id=link_id)
+    except T_Link.DoesNotExist:
+        return JsonResponse({'error': 'Link not found.'}, status=404)
+
+    if int(dossier_id) in link.Dossier_Id.values_list('Dossier_Id', flat=True):
+        link.Dossier_Id.remove(int(dossier_id))
+        link.save()
+        return JsonResponse({'message': f'Dossier {dossier_id} removed from link {link_id}.'}, status=200)
+    else:
+        return JsonResponse({'error': f'Dossier {dossier_id} not found in link {link_id}.'}, status=404)
+
+@csrf_exempt
+def delete_dossier_from_rect(request, rect_id, dossier_id):
+    try:
+        rect = T_Rect.objects.get(R_Id=rect_id)
+    except T_Rect.DoesNotExist:
+        return JsonResponse({'error': 'rect not found.'}, status=404)
+
+    if int(dossier_id) in rect.Dossier_Id.values_list('Dossier_Id', flat=True):
+        rect.Dossier_Id.remove(int(dossier_id))
+        rect.save()
+        return JsonResponse({'message': f'Dossier {dossier_id} removed from link {rect_id}.'}, status=200)
+    else:
+        return JsonResponse({'error': f'Dossier {dossier_id} not found in link {rect_id}.'}, status=404)
+ 
 @csrf_exempt
 def getAllRectByParent(request, id):
     try:
